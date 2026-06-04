@@ -35,6 +35,18 @@ inputs:
     description: 'Directory to run the audit in (the project root).'
     required: false
     default: '.'
+  api-key:
+    description: 'the-doctor.report API key (doc_…). When set, the score is pushed to your dashboard. Pass via secrets, never inline.'
+    required: false
+    default: ''
+  project:
+    description: 'Project slug for the-doctor.report dashboard. Defaults to the GitHub owner/repo.'
+    required: false
+    default: ${{ github.repository }}
+  api-url:
+    description: 'the-doctor.report score-ingest endpoint. Override for self-hosting or staging.'
+    required: false
+    default: 'https://app.the-doctor.report/api/v1/score'
 
 outputs:
   score:
@@ -106,10 +118,55 @@ runs:
         {
           echo "score=$score"
           echo "findings-count=$findings"
+          echo "gate-code=$code"
         } >> "$GITHUB_OUTPUT"
 
-        if [ "$code" -ne 0 ]; then
-          exit "$code"
+    - name: Push score to the-doctor.report
+      if: inputs.api-key != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_API_KEY: ${{ inputs.api-key }}
+        INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_API_URL: ${{ inputs.api-url }}
+        COMMIT_SHA: ${{ github.sha }}
+        REF_NAME: ${{ github.ref_name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        # Build the ingest body from the JSON report (.score.value +
+        # .score.bySeverity.*) and post it with the x-api-key header. The push
+        # runs even when the gate failed — a low score is exactly what the
+        # dashboard needs to chart. jq --arg keeps everything string-safe.
+        payload=$(jq -n \
+          --arg project "$INPUT_PROJECT" \
+          --argjson score "$(jq '.score.value' doctor-report.json)" \
+          --argjson errorCount "$(jq '.score.bySeverity.error' doctor-report.json)" \
+          --argjson warnCount "$(jq '.score.bySeverity.warn' doctor-report.json)" \
+          --argjson infoCount "$(jq '.score.bySeverity.info' doctor-report.json)" \
+          --arg commitSha "$COMMIT_SHA" \
+          --arg branch "$REF_NAME" \
+          --arg prNumber "$PR_NUMBER" \
+          '{
+            project: $project,
+            score: $score,
+            errorCount: $errorCount,
+            warnCount: $warnCount,
+            infoCount: $infoCount,
+            commitSha: $commitSha,
+            branch: $branch,
+          }
+          + (if $prNumber != "" then { prNumber: ($prNumber | tonumber) } else {} end)')
+
+        status=$(curl -sS -o /tmp/doctor-push.json -w '%{http_code}' \
+          -X POST "$INPUT_API_URL" \
+          -H 'content-type: application/json' \
+          -H "x-api-key: $INPUT_API_KEY" \
+          --data "$payload")
+
+        if [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
+          echo "::notice::Pushed score $score to the-doctor.report (project: $INPUT_PROJECT)."
+        else
+          echo "::warning::Score push to the-doctor.report failed (HTTP $status): $(cat /tmp/doctor-push.json)"
         fi
 
     - name: Generate PR comment
@@ -133,3 +190,16 @@ runs:
       with:
         header: doctor
         path: doctor-comment.md
+
+    # Gate LAST so the score push + PR comment always run first, even on a
+    # failing score. Re-applies the exit code captured in the audit step.
+    - name: Enforce gate
+      if: always()
+      shell: bash
+      env:
+        GATE_CODE: ${{ steps.doctor.outputs.gate-code }}
+      run: |
+        if [ -n "$GATE_CODE" ] && [ "$GATE_CODE" -ne 0 ]; then
+          echo "::error::doctor gate failed (exit $GATE_CODE): score below threshold or fail-on severity hit."
+          exit "$GATE_CODE"
+        fi

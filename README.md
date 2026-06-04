@@ -51,6 +51,29 @@ jobs:
       - run: echo "Score: ${{ steps.doctor.outputs.score }}"
 ```
 
+### Push scores to your the-doctor.report dashboard
+
+Track your project's health over time. Generate an API key in your
+[the-doctor.report](https://the-doctor.report) dashboard, store it as a repo
+secret (`DOCTOR_API_KEY`), and the action posts each run's score on every push.
+
+```yaml
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: geoql/doctor-action@v1
+        with:
+          framework: nuxt
+          api-key: ${{ secrets.DOCTOR_API_KEY }}
+          # project defaults to owner/repo; override if your slug differs
+          # project: my-team/my-app
+```
+
+The score is pushed even when the gate fails, so a regression still shows up on
+your dashboard's trend chart.
+
 ## Inputs
 
 | Input | Default | Description |
@@ -62,6 +85,9 @@ jobs:
 | `diff` | `false` | Only report findings in files changed vs `HEAD`. |
 | `pr-comment` | `false` | Emit a Markdown PR comment with the findings. |
 | `working-directory` | `.` | Directory to run the audit in (the project root). |
+| `api-key` | `''` | [the-doctor.report](https://the-doctor.report) API key (`doc_…`). When set, the score is pushed to your dashboard. Pass via secrets, never inline. |
+| `project` | `${{ github.repository }}` | Project slug for the dashboard. Defaults to the GitHub `owner/repo`. |
+| `api-url` | `https://app.the-doctor.report/api/v1/score` | Score-ingest endpoint. Override for self-hosting or staging. |
 
 ## Outputs
 
@@ -72,7 +98,7 @@ jobs:
 
 ## How it works
 
-The action installs the matching doctor CLI (`@geoql/vue-doctor` or `@geoql/nuxt-doctor`) globally with pnpm, runs the audit once to JSON (to drive the outputs and the gate exit code), then emits a SARIF report from the same arguments for GitHub Code Scanning. When `pr-comment` is enabled, it posts a sticky Markdown comment to the pull request.
+The action installs the matching doctor CLI (`@geoql/vue-doctor` or `@geoql/nuxt-doctor`) globally with pnpm, runs the audit once to JSON (to drive the outputs and the gate exit code), then emits a SARIF report from the same arguments for GitHub Code Scanning. When `pr-comment` is enabled, it posts a sticky Markdown comment to the pull request. When `api-key` is set, it pushes the score to [the-doctor.report](https://the-doctor.report) so you can track project health over time. The gate (threshold / `fail-on`) is enforced last, so the score push and PR comment always run first — even on a failing score.
 
 ## License
 
