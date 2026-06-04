@@ -87,7 +87,6 @@ your dashboard's trend chart.
 | `working-directory` | `.` | Directory to run the audit in (the project root). |
 | `api-key` | `''` | [the-doctor.report](https://the-doctor.report) API key (`doc_…`). When set, the score is pushed to your dashboard. Pass via secrets, never inline. |
 | `project` | `${{ github.repository }}` | Project slug for the dashboard. Defaults to the GitHub `owner/repo`. |
-| `api-url` | `https://app.the-doctor.report/api/v1/score` | Score-ingest endpoint. Override for self-hosting or staging. |
 
 ## Outputs
 
