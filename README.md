@@ -1,4 +1,4 @@
-# Doctor — Vue 3 / Nuxt 4 Code Audit Action
+# Doctor — Vue / Nuxt Code Audit Action
 
 A GitHub Action that runs [`@geoql/vue-doctor`](https://www.npmjs.com/package/@geoql/vue-doctor) or [`@geoql/nuxt-doctor`](https://www.npmjs.com/package/@geoql/nuxt-doctor) against your codebase and surfaces a quality score, structured findings, and a SARIF report for GitHub Code Scanning.
 

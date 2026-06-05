@@ -1,5 +1,5 @@
-name: 'Doctor — Vue 3 / Nuxt 4 Code Audit'
-description: 'Audit Vue 3 / Nuxt 4 code with @geoql doctor — AI-slop, reactivity traps, and perf anti-patterns. Score, findings, SARIF.'
+name: 'Doctor — Vue / Nuxt Code Audit'
+description: 'Audit Vue / Nuxt code with @geoql doctor — AI-slop, reactivity traps, and perf anti-patterns. Score, findings, SARIF.'
 author: 'geoql'
 
 branding:
