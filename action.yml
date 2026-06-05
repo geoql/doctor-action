@@ -80,7 +80,7 @@ runs:
       shell: bash
       env:
         INPUT_FRAMEWORK: ${{ inputs.framework }}
-      run: pnpm add -g "@geoql/${INPUT_FRAMEWORK}-doctor"
+      run: pnpm add -g --prefer-online "@geoql/${INPUT_FRAMEWORK}-doctor@latest"
 
     - name: Run doctor
       id: doctor
@@ -130,11 +130,12 @@ runs:
       run: |
         # Build the ingest body from the JSON report (.score.value +
         # .score.bySeverity.*) and post it with the x-api-key header. The push
-        # runs even when the gate failed — a low score is exactly what the
+        # runs even when the gate failed: a low score is exactly what the
         # dashboard needs to chart. jq --arg keeps everything string-safe.
+        score=$(jq -r '.score.value' doctor-report.json)
         payload=$(jq -n \
           --arg project "$INPUT_PROJECT" \
-          --argjson score "$(jq '.score.value' doctor-report.json)" \
+          --argjson score "$score" \
           --argjson errorCount "$(jq '.score.bySeverity.error' doctor-report.json)" \
           --argjson warnCount "$(jq '.score.bySeverity.warn' doctor-report.json)" \
           --argjson infoCount "$(jq '.score.bySeverity.info' doctor-report.json)" \
