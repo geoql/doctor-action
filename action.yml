@@ -80,12 +80,21 @@ runs:
       shell: bash
       env:
         INPUT_FRAMEWORK: ${{ inputs.framework }}
-        # Force pnpm to revalidate the registry packument instead of trusting a
-        # stale CDN-cached dist-tag (we saw fresh runners pull an old `latest`
-        # for minutes after a publish). npm_config_prefer_online is the env-var
-        # form pnpm honours for `add`; the CLI --prefer-online flag is not valid.
-        npm_config_prefer_online: 'true'
-      run: pnpm add -g "@geoql/${INPUT_FRAMEWORK}-doctor@latest"
+      run: |
+        # pnpm caches the registry packument's dist-tags in its store, so
+        # `add @latest` can resolve a stale `latest` (we observed fresh runners
+        # install an old version for a long time after publish, even with
+        # npm_config_prefer_online). Resolve the exact version straight from the
+        # registry HTTP API (no client-side dist-tag cache) and install that
+        # pinned version, which bypasses the cached tag entirely.
+        pkg="@geoql/${INPUT_FRAMEWORK}-doctor"
+        version=$(curl -fsSL "https://registry.npmjs.org/${pkg}/latest" | jq -r '.version')
+        if [ -z "$version" ] || [ "$version" = "null" ]; then
+          echo "::error::Could not resolve latest version of ${pkg} from the npm registry."
+          exit 1
+        fi
+        echo "Resolved ${pkg}@${version}"
+        pnpm add -g "${pkg}@${version}"
 
     - name: Run doctor
       id: doctor
