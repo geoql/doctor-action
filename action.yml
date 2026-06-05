@@ -81,12 +81,12 @@ runs:
       env:
         INPUT_FRAMEWORK: ${{ inputs.framework }}
       run: |
-        # pnpm caches the registry packument's dist-tags in its store, so
-        # `add @latest` can resolve a stale `latest` (we observed fresh runners
-        # install an old version for a long time after publish, even with
-        # npm_config_prefer_online). Resolve the exact version straight from the
-        # registry HTTP API (no client-side dist-tag cache) and install that
-        # pinned version, which bypasses the cached tag entirely.
+        # Resolve the exact version from the registry HTTP API (no client-side
+        # dist-tag cache) then install with `npm i -g`, NOT `pnpm add -g`. pnpm's
+        # global-add path both caches the `latest` dist-tag (resolving stale
+        # versions long after publish) and crashes on a consumer repo's
+        # minimumReleaseAge policy (ERR_PNPM_RESOLUTION_POLICY_VIOLATIONS_UNHANDLED).
+        # npm has neither problem and its global bin is already on PATH via setup-node.
         pkg="@geoql/${INPUT_FRAMEWORK}-doctor"
         version=$(curl -fsSL "https://registry.npmjs.org/${pkg}/latest" | jq -r '.version')
         if [ -z "$version" ] || [ "$version" = "null" ]; then
@@ -94,7 +94,7 @@ runs:
           exit 1
         fi
         echo "Resolved ${pkg}@${version}"
-        pnpm add -g "${pkg}@${version}"
+        npm install -g "${pkg}@${version}"
 
     - name: Run doctor
       id: doctor
