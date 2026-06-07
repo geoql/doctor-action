@@ -1,5 +1,5 @@
 name: 'Doctor — Vue / Nuxt Code Audit'
-description: 'Audit Vue / Nuxt code with @geoql doctor — AI-slop, reactivity traps, and perf anti-patterns. Score, findings, SARIF.'
+description: 'Audit Vue / Nuxt code with @geoql doctor — AI-slop, reactivity traps, and perf anti-patterns. Emits a quality score, structured findings, and a SARIF report for Code Scanning. v2 push mode streams privacy-stripped findings to the-doctor.report.'
 author: 'geoql'
 
 branding:
@@ -36,13 +36,21 @@ inputs:
     required: false
     default: '.'
   api-key:
-    description: 'the-doctor.report API key (doc_…). When set, the score is pushed to your dashboard. Pass via secrets, never inline.'
+    description: 'the-doctor.report API key (doc_…). When set, the score and findings are pushed to your dashboard. Pass via secrets, never inline.'
     required: false
     default: ''
   project:
     description: 'Project slug for the-doctor.report dashboard. Defaults to the GitHub owner/repo.'
     required: false
     default: ${{ github.repository }}
+  push-mode:
+    description: 'How to push results to the-doctor.report: "full" (v2, CLI streams privacy-stripped findings in one call) or "score" (legacy, action posts only the score via curl).'
+    required: false
+    default: 'full'
+  push-url:
+    description: 'Endpoint for the privacy-stripped findings push (used when push-mode is "full"). Defaults to the SaaS endpoint at app.the-doctor.report.'
+    required: false
+    default: 'https://app.the-doctor.report/api/v1/findings'
 
 outputs:
   score:
@@ -106,11 +114,24 @@ runs:
         INPUT_THRESHOLD: ${{ inputs.threshold }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_PUSH_MODE: ${{ inputs.push-mode }}
+        INPUT_PUSH_URL: ${{ inputs.push-url }}
+        INPUT_API_KEY: ${{ inputs.api-key }}
+        INPUT_PROJECT: ${{ inputs.project }}
       run: |
         bin="${INPUT_FRAMEWORK}-doctor"
         args=(--preset "$INPUT_PRESET" --threshold "$INPUT_THRESHOLD" --fail-on "$INPUT_FAIL_ON")
         if [ "$INPUT_DIFF" = "true" ]; then
           args+=(--diff)
+        fi
+
+        # v2 push mode: the CLI handles the privacy-stripped findings push
+        # internally (rule IDs, severities, locations, message templates — never
+        # source code or file contents). Only added when push-mode is "full" AND
+        # an api-key is set; the legacy "score" mode keeps the curl-based step
+        # below and the CLI does no network I/O.
+        if [ "$INPUT_PUSH_MODE" = "full" ] && [ -n "$INPUT_API_KEY" ]; then
+          args+=(--push --push-url "$INPUT_PUSH_URL" --api-key "$INPUT_API_KEY" --project "$INPUT_PROJECT")
         fi
 
         # Run the audit once to JSON (drives outputs + the gate exit code), then
@@ -132,7 +153,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - name: Push score to the-doctor.report
-      if: inputs.api-key != ''
+      if: inputs.api-key != '' && inputs.push-mode != 'full'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
