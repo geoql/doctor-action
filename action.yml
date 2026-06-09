@@ -131,7 +131,7 @@ runs:
         # an api-key is set; the legacy "score" mode keeps the curl-based step
         # below and the CLI does no network I/O.
         if [ "$INPUT_PUSH_MODE" = "full" ] && [ -n "$INPUT_API_KEY" ]; then
-          args+=(--push --push-url "$INPUT_PUSH_URL" --api-key "$INPUT_API_KEY" --project "$INPUT_PROJECT")
+          args+=(--push --push-url "$INPUT_PUSH_URL" --api-key "$INPUT_API_KEY" --push-project "$INPUT_PROJECT")
         fi
 
         # Run the audit once to JSON (drives outputs + the gate exit code), then
