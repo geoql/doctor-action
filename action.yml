@@ -51,6 +51,14 @@ inputs:
     description: 'Endpoint for the privacy-stripped findings push (used when push-mode is "full"). Defaults to the SaaS endpoint at app.the-doctor.report.'
     required: false
     default: 'https://app.the-doctor.report/api/v1/findings'
+  token:
+    description: 'GitHub token used to post PR review comments and the sticky summary. Needs pull-requests: write. Defaults to the workflow token.'
+    required: false
+    default: ${{ github.token }}
+  comment-mode:
+    description: 'What to post on a PR when pr-comment is enabled: summary (sticky comment only) | review (inline comments only) | both.'
+    required: false
+    default: 'both'
 
 outputs:
   score:
@@ -200,27 +208,50 @@ runs:
           echo "::warning::Score push to the-doctor.report failed (HTTP $status): $(cat /tmp/doctor-push.json)"
         fi
 
-    - name: Generate PR comment
-      if: inputs.pr-comment == 'true'
-      shell: bash
+    # PR review: post inline review comments on changed lines + a sticky
+    # create-or-update summary comment. Gated to pull_request events and a
+    # present token; degrades to a no-op otherwise (the script self-skips when
+    # not a PR). The findings JSON is read from disk and parsed inside the
+    # script — no PR title/body/head_ref is ever interpolated into a run: block
+    # (script-injection safe). REPORT_PATH points at the report the audit step
+    # already wrote, resolved against the working directory.
+    - name: Post PR review + summary
+      if: ${{ inputs.pr-comment == 'true' && github.event_name == 'pull_request' && inputs.token != '' }}
+      uses: actions/github-script@v7
       env:
-        INPUT_FRAMEWORK: ${{ inputs.framework }}
-        INPUT_PRESET: ${{ inputs.preset }}
-        INPUT_THRESHOLD: ${{ inputs.threshold }}
-        INPUT_FAIL_ON: ${{ inputs.fail-on }}
-      working-directory: ${{ inputs.working-directory }}
-      run: |
-        bin="${INPUT_FRAMEWORK}-doctor"
-        set +e
-        "$bin" --preset "$INPUT_PRESET" --threshold "$INPUT_THRESHOLD" --fail-on "$INPUT_FAIL_ON" --pr-comment --output doctor-comment.md
-        set -e
-
-    - name: Post PR comment
-      if: inputs.pr-comment == 'true'
-      uses: marocchino/sticky-pull-request-comment@v2
+        REPORT_PATH: ${{ inputs.working-directory }}/doctor-report.json
+        COMMENT_MODE: ${{ inputs.comment-mode }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        ACTION_PATH: ${{ github.action_path }}
       with:
-        header: doctor
-        path: doctor-comment.md
+        github-token: ${{ inputs.token }}
+        script: |
+          const { readFileSync } = require('node:fs');
+          const { pathToFileURL } = require('node:url');
+          const path = require('node:path');
+
+          const reportPath = process.env.REPORT_PATH;
+          let report;
+          try {
+            report = JSON.parse(readFileSync(reportPath, 'utf8'));
+          } catch (err) {
+            core.warning(`No doctor report at ${reportPath} (${err.message}); skipping PR review.`);
+            return;
+          }
+
+          const modUrl = pathToFileURL(
+            path.join(process.env.ACTION_PATH, 'scripts', 'pr-review.mjs'),
+          ).href;
+          const { run } = await import(modUrl);
+
+          await run({
+            github,
+            context,
+            core,
+            report,
+            mode: process.env.COMMENT_MODE || 'both',
+            workingDirectory: process.env.WORKING_DIRECTORY || '.',
+          });
 
     # Gate LAST so the score push + PR comment always run first, even on a
     # failing score. Re-applies the exit code captured in the audit step.

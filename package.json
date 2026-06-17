@@ -1,0 +1,12 @@
+{
+  "name": "@geoql/doctor-action",
+  "version": "2.0.0",
+  "private": true,
+  "description": "GitHub Action wrapper for @geoql/vue-doctor and @geoql/nuxt-doctor",
+  "type": "module",
+  "scripts": {
+    "test": "node --test scripts/"
+  },
+  "license": "MIT",
+  "author": "geoql"
+}

@@ -25,7 +25,7 @@ Listed on the Marketplace as [doctor-vue-nuxt-code-audit](https://github.com/mar
 ### Vue 3 project
 
 ```yaml
-- uses: geoql/doctor-action@v1
+- uses: geoql/doctor-action@v2
   with:
     framework: vue
     preset: recommended
@@ -35,14 +35,16 @@ Listed on the Marketplace as [doctor-vue-nuxt-code-audit](https://github.com/mar
 ### Nuxt 4 project
 
 ```yaml
-- uses: geoql/doctor-action@v1
+- uses: geoql/doctor-action@v2
   with:
     framework: nuxt
     preset: strict
     threshold: '80'
 ```
 
-### PR comment + SARIF upload
+### PR review + SARIF upload
+
+On a pull request, the action posts inline review comments on the changed lines that have findings and keeps one sticky summary comment up to date. `pull-requests: write` is required for both. Use `comment-mode` to choose `summary`, `review`, or `both` (the default).
 
 ```yaml
 permissions:
@@ -56,16 +58,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - id: doctor
-        uses: geoql/doctor-action@v1
+        uses: geoql/doctor-action@v2
         with:
           framework: vue
           pr-comment: 'true'
+          comment-mode: both # summary | review | both
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: doctor.sarif
       - run: echo "Score: ${{ steps.doctor.outputs.score }}"
 ```
+
+Inline comments only land on lines added or changed in the PR diff (a GitHub constraint); findings elsewhere are rolled into the summary instead. The step degrades to summary-only — never failing the build — when it is not a pull request, when `token` is absent, or when a comment cannot be placed.
 
 ### Push findings to your dashboard
 
@@ -77,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: geoql/doctor-action@v1
+      - uses: geoql/doctor-action@v2
         with:
           framework: nuxt
           api-key: ${{ secrets.DOCTOR_API_KEY }}
@@ -96,7 +101,9 @@ The push runs even when the gate fails, so a regression still lands on your tren
 | `threshold` | `0` | Minimum passing score (0-100). The job fails below this value. |
 | `fail-on` | `error` | Exit non-zero on this severity or worse: `error` \| `warn` \| `none`. |
 | `diff` | `false` | Only report findings in files changed vs `HEAD`. |
-| `pr-comment` | `false` | Emit a sticky Markdown PR comment with the findings. |
+| `pr-comment` | `false` | On a PR, post inline review comments + a sticky summary comment. |
+| `comment-mode` | `both` | What to post when `pr-comment` is on: `summary` \| `review` \| `both`. |
+| `token` | `${{ github.token }}` | Token used to post PR comments. Needs `pull-requests: write`. |
 | `working-directory` | `.` | Directory to run the audit in (the project root). |
 | `api-key` | `''` | the-doctor.report API key (`doc_…`). When set, results push to your dashboard. Pass via secrets, never inline. |
 | `project` | `${{ github.repository }}` | Project slug for the dashboard. Defaults to the GitHub `owner/repo`. |
@@ -112,7 +119,7 @@ The push runs even when the gate fails, so a regression still lands on your tren
 
 ## How it works
 
-The action resolves the exact CLI version from the npm registry, installs `@geoql/vue-doctor` or `@geoql/nuxt-doctor` globally, then runs the audit once to JSON (driving the outputs and the gate exit code) and again to SARIF for Code Scanning. When `pr-comment` is `true`, it posts a sticky Markdown comment via `marocchino/sticky-pull-request-comment`.
+The action resolves the exact CLI version from the npm registry, installs `@geoql/vue-doctor` or `@geoql/nuxt-doctor` globally, then runs the audit once to JSON (driving the outputs and the gate exit code) and again to SARIF for Code Scanning. When `pr-comment` is `true` on a pull request, it maps each finding to its position in the PR diff and posts the findings as one batched review (inline comments on changed lines) plus a single sticky summary comment that it creates once and updates in place on every later run, located via a hidden `<!-- geoql-doctor-report -->` marker.
 
 When `api-key` is set, results flow to [the-doctor.report](https://app.the-doctor.report). With `push-mode: full` (the default), the CLI streams privacy-stripped findings to `https://app.the-doctor.report/api/v1/findings` in a single call. The payload carries rule IDs, severities, file paths, line and column numbers, and message templates only. No source code, no file contents, no secrets. With `push-mode: score`, the action falls back to a curl-based score-only POST to `https://app.the-doctor.report/api/v1/score`.
 
