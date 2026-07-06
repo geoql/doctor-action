@@ -81,16 +81,10 @@ runs:
           exit 2
         fi
 
-    - name: Setup pnpm
-      uses: pnpm/action-setup@v6
-      with:
-        run_install: false
-
     - name: Setup Node.js
       uses: actions/setup-node@v6
       with:
         node-version: '24'
-        cache: 'pnpm'
 
     - name: Install doctor
       shell: bash
