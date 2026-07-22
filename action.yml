@@ -211,7 +211,7 @@ runs:
     # already wrote, resolved against the working directory.
     - name: Post PR review + summary
       if: ${{ inputs.pr-comment == 'true' && github.event_name == 'pull_request' && inputs.token != '' }}
-      uses: actions/github-script@v7
+      uses: actions/github-script@v9
       env:
         REPORT_PATH: ${{ inputs.working-directory }}/doctor-report.json
         COMMENT_MODE: ${{ inputs.comment-mode }}
