@@ -133,12 +133,13 @@ runs:
         # source code or file contents). Only added when push-mode is "full" AND
         # an api-key is set; the legacy "score" mode keeps the curl-based step
         # below and the CLI does no network I/O.
+        push_args=()
         if [ "$INPUT_PUSH_MODE" = "full" ] && [ -n "$INPUT_API_KEY" ]; then
-          args+=(--push --push-url "$INPUT_PUSH_URL" --api-key "$INPUT_API_KEY" --push-project "$INPUT_PROJECT")
+          push_args+=(--push --push-url "$INPUT_PUSH_URL" --api-key "$INPUT_API_KEY" --push-project "$INPUT_PROJECT")
           # Monorepo: a non-root working-directory becomes the workspace tag so
           # multiple apps in one repo keep separate score series per project.
           if [ -n "$INPUT_WORKING_DIRECTORY" ] && [ "$INPUT_WORKING_DIRECTORY" != "." ]; then
-            args+=(--push-workspace "$INPUT_WORKING_DIRECTORY")
+            push_args+=(--push-workspace "$INPUT_WORKING_DIRECTORY")
           fi
         fi
 
@@ -146,8 +147,10 @@ runs:
         # emit SARIF from the same args for Code Scanning. set +e lets us capture
         # the gate exit code instead of letting `set -e` abort the step.
         set +e
-        "$bin" "${args[@]}" --format json --output doctor-report.json
+        "$bin" "${args[@]}" "${push_args[@]}" --format json --output doctor-report.json
         code=$?
+        # SARIF re-run must NOT carry the push args or every CI run double-posts
+        # the same score/findings to the dashboard.
         "$bin" "${args[@]}" --format sarif --output doctor.sarif
         set -e
 
