@@ -120,6 +120,7 @@ runs:
         INPUT_PUSH_URL: ${{ inputs.push-url }}
         INPUT_API_KEY: ${{ inputs.api-key }}
         INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
       run: |
         bin="${INPUT_FRAMEWORK}-doctor"
         args=(--preset "$INPUT_PRESET" --threshold "$INPUT_THRESHOLD" --fail-on "$INPUT_FAIL_ON")
@@ -134,6 +135,11 @@ runs:
         # below and the CLI does no network I/O.
         if [ "$INPUT_PUSH_MODE" = "full" ] && [ -n "$INPUT_API_KEY" ]; then
           args+=(--push --push-url "$INPUT_PUSH_URL" --api-key "$INPUT_API_KEY" --push-project "$INPUT_PROJECT")
+          # Monorepo: a non-root working-directory becomes the workspace tag so
+          # multiple apps in one repo keep separate score series per project.
+          if [ -n "$INPUT_WORKING_DIRECTORY" ] && [ "$INPUT_WORKING_DIRECTORY" != "." ]; then
+            args+=(--push-workspace "$INPUT_WORKING_DIRECTORY")
+          fi
         fi
 
         # Run the audit once to JSON (drives outputs + the gate exit code), then
