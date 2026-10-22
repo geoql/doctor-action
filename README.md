@@ -56,14 +56,14 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - id: doctor
         uses: geoql/doctor-action@v2
         with:
           framework: vue
           pr-comment: 'true'
           comment-mode: both # summary | review | both
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: doctor.sarif
@@ -81,7 +81,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: geoql/doctor-action@v2
         with:
           framework: nuxt
