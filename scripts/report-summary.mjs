@@ -28,7 +28,7 @@ function toCount(v) {
 
 /**
  * @param {any} report
- * @returns {{ score: number, findings: number, errors: number, warnings: number, infos: number, affectedFiles: number }}
+ * @returns {{ score: number, findings: number, errors: number, warnings: number, infos: number, affectedFiles: number, newCount: number | null, fixedCount: number | null }}
  */
 export function computeCounts(report) {
   // Count the reported diagnostics, not score.bySeverity: the CLI scores only
@@ -45,6 +45,9 @@ export function computeCounts(report) {
     if (typeof d?.file === 'string' && d.file) files.add(normalizePath(d.file));
   }
 
+  // `baseline` is present with --baseline and with --scope changed.
+  const baseline = report?.baseline && typeof report.baseline === 'object' ? report.baseline : null;
+
   return {
     score: toCount(report?.score?.value),
     findings: diagnostics.length,
@@ -52,7 +55,42 @@ export function computeCounts(report) {
     warnings: tally.warn,
     infos: tally.info,
     affectedFiles: files.size,
+    newCount: baseline ? toCount(baseline.newCount) : null,
+    fixedCount: baseline ? toCount(baseline.fixedCount) : null,
   };
+}
+
+/** @param {unknown} ref */
+function shortRef(ref) {
+  const s = String(ref ?? '');
+  return /^[0-9a-f]{40}$/i.test(s) ? s.slice(0, 7) : s;
+}
+
+/**
+ * One markdown line naming the comparison a scoped or baseline run made, or
+ * null for a plain full run.
+ * @param {any} report
+ * @returns {string | null}
+ */
+export function describeComparison(report) {
+  const mode = report?.scope?.mode;
+  const scoped = typeof mode === 'string' && mode !== 'full';
+  const baseline = report?.baseline && typeof report.baseline === 'object' ? report.baseline : null;
+  if (!scoped && !baseline) return null;
+
+  const parts = [];
+  if (scoped) {
+    const base = report.scope.base ? ` vs \`${shortRef(report.scope.base)}\`` : '';
+    parts.push(`Scope: \`${mode}\`${base}`);
+  }
+  if (baseline) {
+    const file = String(baseline.file ?? '');
+    const against = file.startsWith('git:')
+      ? ''
+      : ` (baseline \`${file.replaceAll('\\', '/').split('/').pop()}\`)`;
+    parts.push(`🆕 **${toCount(baseline.newCount)} new** · ✅ **${toCount(baseline.fixedCount)} fixed**${against}`);
+  }
+  return parts.join(' · ');
 }
 
 /** @param {ReturnType<typeof computeCounts>} c */
@@ -64,6 +102,8 @@ export function renderOutputs(c) {
     `warning-count=${c.warnings}`,
     `info-count=${c.infos}`,
     `affected-files=${c.affectedFiles}`,
+    `new-count=${c.newCount ?? ''}`,
+    `fixed-count=${c.fixedCount ?? ''}`,
     '',
   ].join('\n');
 }
@@ -89,6 +129,9 @@ export function buildStepSummary(report, opts = {}) {
     `| 🔵 Info | ${c.infos} |`,
     `| Affected files | ${c.affectedFiles} |`,
   ];
+
+  const comparison = describeComparison(report);
+  if (comparison) lines.splice(2, 0, comparison, '');
 
   if (diagnostics.length === 0) {
     lines.push('', '✓ No findings — the code is clean.');

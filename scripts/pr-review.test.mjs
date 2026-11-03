@@ -360,3 +360,23 @@ test('run: framework falls back to the report tool name', async () => {
   await run({ github, context: PR_CONTEXT, core: CORE, report: NUXT_CLEAN, mode: 'summary', workingDirectory: 'apps/x' });
   assert.ok(writes[0].body.startsWith('<!-- doctor-action:nuxt:apps/x -->'));
 });
+
+test('run: the summary shows new / fixed when the report carries a baseline', async () => {
+  const { github, writes } = recordingGithub([]);
+  const report = {
+    ...CLEAN,
+    scope: { mode: 'changed', base: 'c0ffee1234567890c0ffee1234567890c0ffee12' },
+    baseline: { file: 'git:c0ffee1234567890c0ffee1234567890c0ffee12', matchedCount: 3, newCount: 0, fixedCount: 2 },
+  };
+  await run({ github, context: PR_CONTEXT, core: CORE, report, mode: 'summary', framework: 'vue', workingDirectory: '.' });
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].body, /Scope: `changed`/);
+  assert.match(writes[0].body, /\*\*0 new\*\*/);
+  assert.match(writes[0].body, /\*\*2 fixed\*\*/);
+});
+
+test('run: a plain full report has no comparison line', async () => {
+  const { github, writes } = recordingGithub([]);
+  await run({ github, context: PR_CONTEXT, core: CORE, report: CLEAN, mode: 'summary', framework: 'vue', workingDirectory: '.' });
+  assert.doesNotMatch(writes[0].body, /fixed\*\*|Scope:/);
+});

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { computeCounts, buildStepSummary, renderOutputs } from './report-summary.mjs';
+import { computeCounts, buildStepSummary, renderOutputs, describeComparison } from './report-summary.mjs';
 
 const REPORT = {
   tool: { name: '@geoql/vue-doctor', version: '1.5.0' },
@@ -24,6 +24,8 @@ test('computeCounts reads score, severity counts and distinct affected files', (
     warnings: 3,
     infos: 1,
     affectedFiles: 4,
+    newCount: null,
+    fixedCount: null,
   });
 });
 
@@ -58,6 +60,8 @@ test('computeCounts tolerates an empty / malformed report', () => {
     warnings: 0,
     infos: 0,
     affectedFiles: 0,
+    newCount: null,
+    fixedCount: null,
   });
 });
 
@@ -72,6 +76,8 @@ test('renderOutputs emits every action output key', () => {
       'warning-count=3',
       'info-count=1',
       'affected-files=4',
+      'new-count=',
+      'fixed-count=',
       '',
     ].join('\n'),
   );
@@ -109,4 +115,52 @@ test('buildStepSummary handles the clean case', () => {
   const md = buildStepSummary({ score: { value: 100 }, diagnostics: [] });
   assert.match(md, /No findings/);
   assert.doesNotMatch(md, /Top rules/);
+});
+
+const SHA = 'c0ffee1234567890c0ffee1234567890c0ffee12';
+
+test('computeCounts reads new/fixed from the baseline summary', () => {
+  const c = computeCounts({ ...REPORT, baseline: { file: 'b.json', matchedCount: 4, newCount: 2, fixedCount: 5 } });
+  assert.equal(c.newCount, 2);
+  assert.equal(c.fixedCount, 5);
+  assert.match(renderOutputs(c), /^new-count=2$/m);
+  assert.match(renderOutputs(c), /^fixed-count=5$/m);
+});
+
+test('describeComparison is null for a plain full run', () => {
+  assert.equal(describeComparison(REPORT), null);
+  assert.equal(describeComparison({ ...REPORT, scope: { mode: 'full' } }), null);
+  assert.equal(describeComparison(undefined), null);
+});
+
+test('describeComparison shows new / fixed against a saved baseline', () => {
+  const s = describeComparison({ baseline: { file: 'reports/doctor-baseline.json', newCount: 1, fixedCount: 3 } });
+  assert.match(s, /\*\*1 new\*\*/);
+  assert.match(s, /\*\*3 fixed\*\*/);
+  assert.match(s, /`doctor-baseline\.json`/);
+});
+
+test('describeComparison names the scope and shortens a sha base', () => {
+  const s = describeComparison({
+    scope: { mode: 'changed', base: SHA },
+    baseline: { file: `git:${SHA}`, newCount: 0, fixedCount: 2 },
+  });
+  assert.match(s, /Scope: `changed`/);
+  assert.match(s, /`c0ffee1`/);
+  assert.doesNotMatch(s, /c0ffee12345/);
+  assert.match(s, /\*\*0 new\*\*/);
+  assert.match(s, /\*\*2 fixed\*\*/);
+});
+
+test('describeComparison shows a lines scope without baseline counts', () => {
+  const s = describeComparison({ scope: { mode: 'lines', base: 'origin/main' } });
+  assert.match(s, /Scope: `lines` vs `origin\/main`/);
+  assert.doesNotMatch(s, /new/);
+});
+
+test('buildStepSummary includes the comparison line when present', () => {
+  const md = buildStepSummary({ ...REPORT, scope: { mode: 'changed', base: SHA }, baseline: { file: `git:${SHA}`, newCount: 6, fixedCount: 1 } });
+  assert.match(md, /\*\*6 new\*\*/);
+  assert.match(md, /\*\*1 fixed\*\*/);
+  assert.doesNotMatch(buildStepSummary(REPORT), /new\*\*/);
 });

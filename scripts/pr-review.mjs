@@ -4,13 +4,15 @@
 //
 // This file is intentionally dependency-light: the pure functions
 // (parseDiffPositions, mapFindingsToComments, selectStickyComment,
-// filterAlreadyPosted, buildSummary) have ZERO imports and are unit-tested in
-// pr-review.test.mjs. The default-exported run() wires them to an authenticated
+// filterAlreadyPosted, buildSummary) are unit-tested in pr-review.test.mjs;
+// the only import is the sibling describeComparison helper. The default-exported run() wires them to an authenticated
 // octokit (passed in by actions/github-script@v7) and performs the network I/O.
 //
 // GitHub only allows review comments on diff positions, so any finding whose
 // file+line is not on an added line in the PR diff is skipped (rolled into the
 // summary) rather than crashing the step.
+
+import { describeComparison } from './report-summary.mjs';
 
 // Pre-2.1.2 marker, shared by every job. Only the root job may adopt a comment
 // that carries it, so two jobs in one workflow never fight over one comment.
@@ -270,6 +272,7 @@ const MAX_SUMMARY_FINDINGS = 10;
  *   repository?: string,
  *   runId?: string,
  *   skippedCount?: number,
+ *   comparison?: string | null,
  * }} input
  */
 export function buildSummary(input) {
@@ -303,6 +306,8 @@ export function buildSummary(input) {
     '',
     `**${errors} error${errors === 1 ? '' : 's'}**, **${warns} warn${warns === 1 ? '' : 's'}**, ${infos} info`,
   ];
+
+  if (input.comparison) lines.push('', input.comparison);
 
   if (total === 0) {
     lines.push('', '✓ No actionable findings — the code is clean.');
@@ -460,6 +465,7 @@ export async function run({ github, context, core, report, mode, workingDirector
       repository: `${owner}/${repo}`,
       runId: String(context.runId ?? ''),
       skippedCount,
+      comparison: describeComparison(report),
     });
 
     const existingIssueComments = await github.paginate(github.rest.issues.listComments, {
