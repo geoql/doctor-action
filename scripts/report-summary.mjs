@@ -31,8 +31,9 @@ function toCount(v) {
  * @returns {{ score: number, findings: number, errors: number, warnings: number, infos: number, affectedFiles: number }}
  */
 export function computeCounts(report) {
+  // Count the reported diagnostics, not score.bySeverity: the CLI scores only
+  // a subset, and the counts must agree with findings-count and top rules.
   const diagnostics = Array.isArray(report?.diagnostics) ? report.diagnostics : [];
-  const bySeverity = report?.score?.bySeverity;
 
   const tally = { error: 0, warn: 0, info: 0 };
   for (const d of diagnostics) {
@@ -44,13 +45,12 @@ export function computeCounts(report) {
     if (typeof d?.file === 'string' && d.file) files.add(normalizePath(d.file));
   }
 
-  const hasBySeverity = bySeverity && typeof bySeverity === 'object';
   return {
     score: toCount(report?.score?.value),
     findings: diagnostics.length,
-    errors: hasBySeverity ? toCount(bySeverity.error) : tally.error,
-    warnings: hasBySeverity ? toCount(bySeverity.warn) : tally.warn,
-    infos: hasBySeverity ? toCount(bySeverity.info) : tally.info,
+    errors: tally.error,
+    warnings: tally.warn,
+    infos: tally.info,
     affectedFiles: files.size,
   };
 }

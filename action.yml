@@ -76,7 +76,7 @@ outputs:
     description: 'The total number of diagnostics reported by the doctor.'
     value: ${{ steps.summary.outputs.findings-count }}
   error-count:
-    description: 'The number of error-severity diagnostics.'
+    description: 'The number of error-severity diagnostics in the report.'
     value: ${{ steps.summary.outputs.error-count }}
   warning-count:
     description: 'The number of warn-severity diagnostics.'

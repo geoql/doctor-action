@@ -27,7 +27,23 @@ test('computeCounts reads score, severity counts and distinct affected files', (
   });
 });
 
-test('computeCounts falls back to counting diagnostics when bySeverity is absent', () => {
+test('computeCounts counts reported diagnostics, not the scored subset in bySeverity', () => {
+  // The CLI scores a subset (bySeverity) but reports every diagnostic; the
+  // counts must agree with findings-count and the top-rules table.
+  const counts = computeCounts({
+    score: { value: 97, bySeverity: { error: 0, warn: 2, info: 0 } },
+    diagnostics: [
+      ...REPORT.diagnostics.filter((d) => d.severity === 'warn'),
+      { file: 'src/E.ts', line: 1, ruleId: 'r/e', severity: 'warn', message: 'm' },
+      { file: 'src/F.ts', line: 1, ruleId: 'r/e', severity: 'warn', message: 'm' },
+    ],
+  });
+  assert.equal(counts.findings, 5);
+  assert.equal(counts.warnings, 5);
+  assert.equal(counts.errors, 0);
+});
+
+test('computeCounts counts diagnostics when bySeverity is absent', () => {
   const counts = computeCounts({ score: { value: 50 }, diagnostics: REPORT.diagnostics });
   assert.equal(counts.errors, 2);
   assert.equal(counts.warnings, 3);
