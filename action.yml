@@ -318,6 +318,7 @@ runs:
         COMMENT_MODE: ${{ inputs.comment-mode }}
         COMMENT_ON_CLEAN: ${{ inputs.comment-on-clean }}
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        FRAMEWORK: ${{ inputs.framework }}
         ACTION_PATH: ${{ github.action_path }}
       with:
         github-token: ${{ inputs.token }}
@@ -347,6 +348,7 @@ runs:
             report,
             mode: process.env.COMMENT_MODE || 'both',
             workingDirectory: process.env.WORKING_DIRECTORY || '.',
+            framework: process.env.FRAMEWORK,
             commentOnClean: process.env.COMMENT_ON_CLEAN !== 'false',
           });
 

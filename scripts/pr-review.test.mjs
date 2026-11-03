@@ -10,7 +10,8 @@ import {
   findingMarker,
   decideSummaryAction,
   run,
-  STICKY_MARKER,
+  LEGACY_STICKY_MARKER,
+  stickyMarker,
 } from './pr-review.mjs';
 
 // A two-hunk unified diff for one file, plus a second file. Hand-computed
@@ -133,17 +134,17 @@ test('mapFindingsToComments dedupes identical path+position+rule', () => {
 test('selectStickyComment finds the existing bot comment by hidden marker', () => {
   const existing = [
     { id: 1, body: 'unrelated human comment' },
-    { id: 2, body: `${STICKY_MARKER}\n## old report` },
+    { id: 2, body: `${LEGACY_STICKY_MARKER}\n## old report` },
     { id: 3, body: 'another' },
   ];
-  assert.equal(selectStickyComment(existing, STICKY_MARKER), 2);
+  assert.equal(selectStickyComment(existing, LEGACY_STICKY_MARKER), 2);
 });
 
 test('selectStickyComment returns null when no marked comment exists (create path)', () => {
   const existing = [{ id: 1, body: 'hello' }];
-  assert.equal(selectStickyComment(existing, STICKY_MARKER), null);
-  assert.equal(selectStickyComment([], STICKY_MARKER), null);
-  assert.equal(selectStickyComment(undefined, STICKY_MARKER), null);
+  assert.equal(selectStickyComment(existing, LEGACY_STICKY_MARKER), null);
+  assert.equal(selectStickyComment([], LEGACY_STICKY_MARKER), null);
+  assert.equal(selectStickyComment(undefined, LEGACY_STICKY_MARKER), null);
 });
 
 test('filterAlreadyPosted drops findings already commented in a prior run', () => {
@@ -177,7 +178,7 @@ test('buildSummary embeds the sticky marker, score, counts and a link', () => {
     runId: '123',
   });
 
-  assert.ok(md.startsWith(STICKY_MARKER), 'summary must start with the hidden marker');
+  assert.ok(md.startsWith(stickyMarker({ framework: 'vue', workingDirectory: '.' })), 'summary must start with the hidden marker');
   assert.match(md, /Score: \*\*90\*\*|Score: 90|90/);
   assert.match(md, /2 error/);
   assert.match(md, /1 warn/);
@@ -195,7 +196,7 @@ test('buildSummary handles the clean (no findings) case', () => {
     repository: 'geoql/app',
     runId: '1',
   });
-  assert.ok(md.startsWith(STICKY_MARKER));
+  assert.ok(md.startsWith(stickyMarker({ framework: 'nuxt', workingDirectory: '.' })));
   assert.match(md, /No actionable findings|✓|clean/i);
 });
 
@@ -247,7 +248,7 @@ test('run: comment-on-clean=false skips creating a comment on a clean scan', asy
 });
 
 test('run: comment-on-clean=false still updates an existing sticky comment', async () => {
-  const { github, calls } = fakeGithub([{ id: 9, body: `${STICKY_MARKER}\nold` }]);
+  const { github, calls } = fakeGithub([{ id: 9, body: `${LEGACY_STICKY_MARKER}\nold` }]);
   await run({ github, context: PR_CONTEXT, core: CORE, report: CLEAN, mode: 'summary', commentOnClean: false });
   assert.deepEqual(calls, { create: 0, update: 1 });
 });
@@ -256,4 +257,106 @@ test('run: comment-on-clean defaults to true (creates on clean)', async () => {
   const { github, calls } = fakeGithub([]);
   await run({ github, context: PR_CONTEXT, core: CORE, report: CLEAN, mode: 'summary' });
   assert.deepEqual(calls, { create: 1, update: 0 });
+});
+
+/** Octokit double that records which comment id each write targets + its body. */
+function recordingGithub(existingIssueComments) {
+  const writes = [];
+  const github = {
+    paginate: async (fn) => fn(),
+    rest: {
+      issues: {
+        listComments: () => existingIssueComments,
+        createComment: async ({ body }) => {
+          writes.push({ op: 'create', body });
+        },
+        updateComment: async ({ comment_id, body }) => {
+          writes.push({ op: 'update', id: comment_id, body });
+        },
+      },
+      pulls: {},
+    },
+  };
+  return { github, writes };
+}
+
+const NUXT_CLEAN = { tool: { name: '@geoql/nuxt-doctor' }, score: { value: 100 }, diagnostics: [] };
+
+test('stickyMarker encodes framework + normalized working directory', () => {
+  assert.equal(stickyMarker({ framework: 'nuxt', workingDirectory: 'apps/mapcn-vue' }), '<!-- doctor-action:nuxt:apps/mapcn-vue -->');
+  assert.equal(stickyMarker({ framework: 'nuxt', workingDirectory: './apps/mapcn-vue/' }), '<!-- doctor-action:nuxt:apps/mapcn-vue -->');
+  assert.equal(stickyMarker({ framework: 'vue', workingDirectory: '.' }), '<!-- doctor-action:vue:. -->');
+  assert.equal(stickyMarker({ framework: 'vue', workingDirectory: './' }), '<!-- doctor-action:vue:. -->');
+  assert.equal(stickyMarker({ framework: 'vue' }), '<!-- doctor-action:vue:. -->');
+  assert.notEqual(
+    stickyMarker({ framework: 'nuxt', workingDirectory: 'apps/mapcn-vue' }),
+    stickyMarker({ framework: 'vue', workingDirectory: 'packages/v-maplibre' }),
+  );
+});
+
+test('buildSummary uses the scoped marker and titles a non-root job with its directory', () => {
+  const marker = stickyMarker({ framework: 'nuxt', workingDirectory: 'apps/mapcn-vue' });
+  const md = buildSummary({
+    toolName: '@geoql/nuxt-doctor',
+    score: 100,
+    bySeverity: { error: 0, warn: 0, info: 0 },
+    diagnostics: [],
+    marker,
+    workingDirectory: 'apps/mapcn-vue',
+  });
+  assert.ok(md.startsWith(marker));
+  assert.ok(!md.includes(LEGACY_STICKY_MARKER));
+  assert.match(md, /## 🛡 @geoql\/nuxt-doctor · `apps\/mapcn-vue` — Score/);
+});
+
+test('buildSummary keeps the plain title for a root job', () => {
+  const md = buildSummary({ toolName: '@geoql/vue-doctor', score: 90, bySeverity: {}, diagnostics: [], workingDirectory: '.' });
+  assert.match(md, /## 🛡 @geoql\/vue-doctor — Score/);
+});
+
+test('run: two jobs in one workflow keep two separate sticky comments', async () => {
+  const existing = [];
+  const { github, writes } = recordingGithub(existing);
+  await run({ github, context: PR_CONTEXT, core: CORE, report: NUXT_CLEAN, mode: 'summary', framework: 'nuxt', workingDirectory: 'apps/mapcn-vue' });
+  await run({ github, context: PR_CONTEXT, core: CORE, report: CLEAN, mode: 'summary', framework: 'vue', workingDirectory: 'packages/v-maplibre' });
+  assert.deepEqual(writes.map((w) => w.op), ['create', 'create']);
+
+  // Second round: each job finds and updates ONLY its own comment.
+  existing.push({ id: 1, body: writes[0].body }, { id: 2, body: writes[1].body });
+  writes.length = 0;
+  await run({ github, context: PR_CONTEXT, core: CORE, report: NUXT_CLEAN, mode: 'summary', framework: 'nuxt', workingDirectory: 'apps/mapcn-vue' });
+  await run({ github, context: PR_CONTEXT, core: CORE, report: CLEAN, mode: 'summary', framework: 'vue', workingDirectory: 'packages/v-maplibre' });
+  assert.deepEqual(writes.map((w) => [w.op, w.id]), [['update', 1], ['update', 2]]);
+});
+
+test('run: a root job adopts the legacy-marker comment and rewrites it with the new marker', async () => {
+  const { github, writes } = recordingGithub([{ id: 9, body: `${LEGACY_STICKY_MARKER}\nold` }]);
+  await run({ github, context: PR_CONTEXT, core: CORE, report: CLEAN, mode: 'summary', framework: 'vue', workingDirectory: '.' });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].op, 'update');
+  assert.equal(writes[0].id, 9);
+  assert.ok(writes[0].body.startsWith(stickyMarker({ framework: 'vue', workingDirectory: '.' })));
+  assert.ok(!writes[0].body.includes(LEGACY_STICKY_MARKER));
+});
+
+test('run: a non-root job never adopts the legacy-marker comment', async () => {
+  const { github, writes } = recordingGithub([{ id: 9, body: `${LEGACY_STICKY_MARKER}\nold` }]);
+  await run({ github, context: PR_CONTEXT, core: CORE, report: NUXT_CLEAN, mode: 'summary', framework: 'nuxt', workingDirectory: 'apps/mapcn-vue' });
+  assert.deepEqual(writes.map((w) => w.op), ['create']);
+});
+
+test('run: the new-marker comment wins over a legacy comment', async () => {
+  const marker = stickyMarker({ framework: 'vue', workingDirectory: '.' });
+  const { github, writes } = recordingGithub([
+    { id: 3, body: `${LEGACY_STICKY_MARKER}\nold` },
+    { id: 4, body: `${marker}\nnew` },
+  ]);
+  await run({ github, context: PR_CONTEXT, core: CORE, report: CLEAN, mode: 'summary', framework: 'vue', workingDirectory: '.' });
+  assert.deepEqual(writes.map((w) => [w.op, w.id]), [['update', 4]]);
+});
+
+test('run: framework falls back to the report tool name', async () => {
+  const { github, writes } = recordingGithub([]);
+  await run({ github, context: PR_CONTEXT, core: CORE, report: NUXT_CLEAN, mode: 'summary', workingDirectory: 'apps/x' });
+  assert.ok(writes[0].body.startsWith('<!-- doctor-action:nuxt:apps/x -->'));
 });

@@ -1,6 +1,6 @@
 {
   "name": "@geoql/doctor-action",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "private": true,
   "description": "GitHub Action wrapper for @geoql/vue-doctor and @geoql/nuxt-doctor",
   "type": "module",

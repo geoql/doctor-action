@@ -12,7 +12,35 @@
 // file+line is not on an added line in the PR diff is skipped (rolled into the
 // summary) rather than crashing the step.
 
-export const STICKY_MARKER = '<!-- geoql-doctor-report -->';
+// Pre-2.1.2 marker, shared by every job. Only the root job may adopt a comment
+// that carries it, so two jobs in one workflow never fight over one comment.
+export const LEGACY_STICKY_MARKER = '<!-- geoql-doctor-report -->';
+
+/**
+ * Normalize a working directory to a repo-relative path; the root is ''.
+ * @param {string | undefined} workingDirectory
+ */
+export function normalizeWorkingDirectory(workingDirectory) {
+  const wd = String(workingDirectory ?? '.')
+    .replace(/^(\.\/)+/, '')
+    .replace(/\/+$/, '');
+  return wd === '.' ? '' : wd;
+}
+
+/**
+ * Hidden sticky-summary marker, scoped to one framework + working directory so
+ * each job in a workflow keeps its own comment.
+ * @param {{ framework: string, workingDirectory?: string }} input
+ */
+export function stickyMarker({ framework, workingDirectory }) {
+  const wd = normalizeWorkingDirectory(workingDirectory) || '.';
+  return `<!-- doctor-action:${framework}:${wd} -->`;
+}
+
+/** @param {string | undefined} toolName */
+function frameworkFromTool(toolName) {
+  return String(toolName ?? '').includes('nuxt') ? 'nuxt' : 'vue';
+}
 const DOCS_BASE = 'https://docs.the-doctor.report/rules/';
 
 /** @param {string} ruleId */
@@ -230,7 +258,7 @@ function binName(toolName) {
 const MAX_SUMMARY_FINDINGS = 10;
 
 /**
- * Build the sticky summary markdown. Always starts with STICKY_MARKER so the
+ * Build the sticky summary markdown. Always starts with the scoped sticky marker so the
  * upsert can find it.
  *
  * @param {{
@@ -254,6 +282,9 @@ export function buildSummary(input) {
     repository = '',
     runId = '',
   } = input;
+  const wd = normalizeWorkingDirectory(input.workingDirectory);
+  const marker = input.marker ?? stickyMarker({ framework: frameworkFromTool(toolName), workingDirectory: wd });
+  const title = wd ? `${toolName} · \`${wd}\`` : toolName;
 
   const errors = Number(bySeverity?.error ?? 0);
   const warns = Number(bySeverity?.warn ?? 0);
@@ -267,8 +298,8 @@ export function buildSummary(input) {
 
   /** @type {string[]} */
   const lines = [
-    STICKY_MARKER,
-    `## 🛡 ${toolName} — Score: **${score}**`,
+    marker,
+    `## 🛡 ${title} — Score: **${score}**`,
     '',
     `**${errors} error${errors === 1 ? '' : 's'}**, **${warns} warn${warns === 1 ? '' : 's'}**, ${infos} info`,
   ];
@@ -339,8 +370,9 @@ export function decideSummaryAction({ stickyId, isClean, commentOnClean }) {
  *   commentOnClean?: boolean,
  * }} args
  */
-export async function run({ github, context, core, report, mode, workingDirectory, commentOnClean = true }) {
+export async function run({ github, context, core, report, mode, workingDirectory, framework, commentOnClean = true }) {
   const toolName = report?.tool?.name ?? '@geoql/doctor';
+  const fw = framework === 'vue' || framework === 'nuxt' ? framework : frameworkFromTool(toolName);
   const score = Number(report?.score?.value ?? 0);
   const bySeverity = report?.score?.bySeverity ?? { error: 0, warn: 0, info: 0 };
   const diagnostics = Array.isArray(report?.diagnostics) ? report.diagnostics : [];
@@ -359,8 +391,7 @@ export async function run({ github, context, core, report, mode, workingDirector
 
   // Working-directory prefix: the CLI reports paths relative to where it ran,
   // but the diff is repo-rooted. e.g. working-directory "packages/app" → prefix.
-  const wd = (workingDirectory ?? '.').replace(/^\.\/?/, '').replace(/\/+$/, '');
-  const prefix = wd && wd !== '.' ? wd : '';
+  const prefix = normalizeWorkingDirectory(workingDirectory);
 
   let skippedCount = 0;
 
@@ -417,8 +448,11 @@ export async function run({ github, context, core, report, mode, workingDirector
   }
 
   if (wantsSummary) {
+    const marker = stickyMarker({ framework: fw, workingDirectory: prefix });
     const body = buildSummary({
       toolName,
+      marker,
+      workingDirectory: prefix,
       score,
       bySeverity,
       diagnostics,
@@ -434,7 +468,12 @@ export async function run({ github, context, core, report, mode, workingDirector
       issue_number: prNumber,
       per_page: 100,
     });
-    const stickyId = selectStickyComment(existingIssueComments, STICKY_MARKER);
+    // Own comment first; only the root job may adopt a pre-2.1.2 comment. The
+    // update rewrites it with the scoped marker, so it is adopted at most once.
+    let stickyId = selectStickyComment(existingIssueComments, marker);
+    if (stickyId === null && prefix === '') {
+      stickyId = selectStickyComment(existingIssueComments, LEGACY_STICKY_MARKER);
+    }
 
     const action = decideSummaryAction({ stickyId, isClean: diagnostics.length === 0, commentOnClean });
 
