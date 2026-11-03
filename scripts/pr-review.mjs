@@ -313,6 +313,20 @@ export function buildSummary(input) {
 }
 
 /**
+ * Decide what to do with the sticky summary comment. An existing comment is
+ * always updated (so a PR that goes clean shows the clean state); a clean scan
+ * only creates a NEW comment when comment-on-clean is enabled.
+ *
+ * @param {{ stickyId: number | null, isClean: boolean, commentOnClean: boolean }} input
+ * @returns {'update' | 'create' | 'skip'}
+ */
+export function decideSummaryAction({ stickyId, isClean, commentOnClean }) {
+  if (stickyId !== null) return 'update';
+  if (isClean && !commentOnClean) return 'skip';
+  return 'create';
+}
+
+/**
  * Orchestrator invoked from actions/github-script@v7.
  *
  * @param {{
@@ -322,9 +336,10 @@ export function buildSummary(input) {
  *   report: { tool?: { name?: string }, score?: { value?: number, bySeverity?: any }, diagnostics?: any[] },
  *   mode: 'summary' | 'review' | 'both',
  *   workingDirectory?: string,
+ *   commentOnClean?: boolean,
  * }} args
  */
-export async function run({ github, context, core, report, mode, workingDirectory }) {
+export async function run({ github, context, core, report, mode, workingDirectory, commentOnClean = true }) {
   const toolName = report?.tool?.name ?? '@geoql/doctor';
   const score = Number(report?.score?.value ?? 0);
   const bySeverity = report?.score?.bySeverity ?? { error: 0, warn: 0, info: 0 };
@@ -421,12 +436,16 @@ export async function run({ github, context, core, report, mode, workingDirector
     });
     const stickyId = selectStickyComment(existingIssueComments, STICKY_MARKER);
 
-    if (stickyId !== null) {
+    const action = decideSummaryAction({ stickyId, isClean: diagnostics.length === 0, commentOnClean });
+
+    if (action === 'update' && stickyId !== null) {
       await github.rest.issues.updateComment({ owner, repo, comment_id: stickyId, body });
       core.info(`Updated sticky summary comment #${stickyId}.`);
-    } else {
+    } else if (action === 'create') {
       await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
       core.info('Created sticky summary comment.');
+    } else {
+      core.info('Clean scan and comment-on-clean is false — not creating a summary comment.');
     }
   }
 }

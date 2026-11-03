@@ -8,6 +8,8 @@ import {
   filterAlreadyPosted,
   buildSummary,
   findingMarker,
+  decideSummaryAction,
+  run,
   STICKY_MARKER,
 } from './pr-review.mjs';
 
@@ -195,4 +197,63 @@ test('buildSummary handles the clean (no findings) case', () => {
   });
   assert.ok(md.startsWith(STICKY_MARKER));
   assert.match(md, /No actionable findings|✓|clean/i);
+});
+
+test('decideSummaryAction: an existing sticky comment is always updated', () => {
+  assert.equal(decideSummaryAction({ stickyId: 7, isClean: true, commentOnClean: false }), 'update');
+  assert.equal(decideSummaryAction({ stickyId: 7, isClean: false, commentOnClean: true }), 'update');
+});
+
+test('decideSummaryAction: a clean scan creates no NEW comment when comment-on-clean is false', () => {
+  assert.equal(decideSummaryAction({ stickyId: null, isClean: true, commentOnClean: false }), 'skip');
+  assert.equal(decideSummaryAction({ stickyId: null, isClean: true, commentOnClean: true }), 'create');
+  assert.equal(decideSummaryAction({ stickyId: null, isClean: false, commentOnClean: false }), 'create');
+});
+
+/** Minimal octokit double recording issue-comment writes. */
+function fakeGithub(existingIssueComments) {
+  const calls = { create: 0, update: 0 };
+  const github = {
+    paginate: async (fn) => fn(),
+    rest: {
+      issues: {
+        listComments: () => existingIssueComments,
+        createComment: async () => {
+          calls.create += 1;
+        },
+        updateComment: async () => {
+          calls.update += 1;
+        },
+      },
+      pulls: {},
+    },
+  };
+  return { github, calls };
+}
+
+const PR_CONTEXT = {
+  eventName: 'pull_request',
+  payload: { pull_request: { number: 5 } },
+  repo: { owner: 'geoql', repo: 'app' },
+  runId: 1,
+};
+const CORE = { info() {}, warning() {} };
+const CLEAN = { tool: { name: '@geoql/vue-doctor' }, score: { value: 100 }, diagnostics: [] };
+
+test('run: comment-on-clean=false skips creating a comment on a clean scan', async () => {
+  const { github, calls } = fakeGithub([]);
+  await run({ github, context: PR_CONTEXT, core: CORE, report: CLEAN, mode: 'summary', commentOnClean: false });
+  assert.deepEqual(calls, { create: 0, update: 0 });
+});
+
+test('run: comment-on-clean=false still updates an existing sticky comment', async () => {
+  const { github, calls } = fakeGithub([{ id: 9, body: `${STICKY_MARKER}\nold` }]);
+  await run({ github, context: PR_CONTEXT, core: CORE, report: CLEAN, mode: 'summary', commentOnClean: false });
+  assert.deepEqual(calls, { create: 0, update: 1 });
+});
+
+test('run: comment-on-clean defaults to true (creates on clean)', async () => {
+  const { github, calls } = fakeGithub([]);
+  await run({ github, context: PR_CONTEXT, core: CORE, report: CLEAN, mode: 'summary' });
+  assert.deepEqual(calls, { create: 1, update: 0 });
 });
