@@ -10,8 +10,12 @@
 //   `diff <first-parent> <worktree>` is exactly the head-vs-base change set.
 // - PR head (`ref: head.sha`): diff against merge-base(base, head).
 //
-// Usage: node diff-base.mjs <base-sha> <head-sha>   (run inside the repo)
+// Usage: node diff-base.mjs <base-sha> <head-sha> [files|merge-base]
 // Writes `ref=` and `source=` to $GITHUB_OUTPUT (empty ref = keep plain --diff).
+//
+// `merge-base` mode is for `--scope <mode> --base <ref>`: the CLI computes
+// merge-base(<ref>, HEAD) itself, which a depth-1 checkout cannot answer. The
+// script deepens the history until it can, and leaves `ref` empty otherwise.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -46,7 +50,7 @@ function git(args) {
 }
 
 function main() {
-  const [baseSha = '', headSha = ''] = process.argv.slice(2);
+  const [baseSha = '', headSha = '', mode = 'files'] = process.argv.slice(2);
   if (baseSha && headSha) {
     // Best effort: a depth-1 checkout has neither the base nor the head
     // commit objects. Fetch both so they resolve as refs.
@@ -61,7 +65,26 @@ function main() {
     .map((l) => l.slice('parent '.length).trim());
   const mergeBase = baseSha && headSha ? git(['merge-base', baseSha, headSha]) : '';
 
-  const picked = pickDiffRef({ baseSha, headSha, worktreeSha, worktreeParents, mergeBase });
+  let picked = pickDiffRef({ baseSha, headSha, worktreeSha, worktreeParents, mergeBase });
+  if (picked && mode === 'merge-base' && !git(['merge-base', picked.ref, 'HEAD'])) {
+    // Merge ref: fetching HEAD at depth 2 un-shallows it onto its parents.
+    // PR head: deepen both sides until they meet.
+    if (picked.source === 'merge-parent') git(['fetch', '--no-tags', '--depth=2', 'origin', worktreeSha]);
+    for (const depth of [50, 500]) {
+      if (git(['merge-base', picked.ref, 'HEAD'])) break;
+      git(['fetch', '--no-tags', `--deepen=${depth}`, 'origin', baseSha, headSha]);
+    }
+    if (picked.source !== 'merge-parent') {
+      const deepened = git(['merge-base', baseSha, headSha]);
+      if (deepened) picked = { ref: deepened, source: 'merge-base' };
+    }
+    if (!git(['merge-base', picked.ref, 'HEAD'])) {
+      console.log(
+        `::warning::doctor could not find a merge-base between ${picked.ref} and HEAD. Use fetch-depth: 0 on actions/checkout.`,
+      );
+      picked = null;
+    }
+  }
   // The chosen ref must exist locally or the CLI exits 2.
   const usable = picked && git(['rev-parse', '--verify', '--quiet', `${picked.ref}^{commit}`]) ? picked : null;
   if (picked && !usable) {

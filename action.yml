@@ -27,10 +27,26 @@ inputs:
     description: "@geoql/<framework>-doctor version or range to run. The default 'latest' uses the project's own installed doctor (via its package manager) when present, else the range declared in package.json, else the latest published version. Any other value always overrides."
     required: false
     default: 'latest'
+  scope:
+    description: "How much of a pull request to report (the CLI --scope): full (everything, the default) | files (all findings in changed files) | changed (only findings the PR introduced) | lines (findings on changed lines) | contextual (changed lines plus findings in edited elements, functions, components, or files). Non-full scopes compare the PR head with its base and apply to pull_request events only; other events scan the full project. Needs vue-doctor 1.8.0 / nuxt-doctor 1.9.0 or later."
+    required: false
+    default: 'full'
   diff:
-    description: "Only report findings in changed files. On pull requests the changed set is the PR head vs its base; elsewhere it is changes vs HEAD. Set to 'true' to enable."
+    description: "Deprecated: use scope: files. Only report findings in changed files. On pull requests the changed set is the PR head vs its base; elsewhere it is changes vs HEAD. Set to 'true' to enable. Ignored when scope is not full."
     required: false
     default: 'false'
+  baseline:
+    description: 'Path (relative to working-directory) to a saved JSON report. Only findings that are new relative to it are reported and gated; the score still covers every finding. Needs vue-doctor 1.8.0 / nuxt-doctor 1.9.0 or later.'
+    required: false
+    default: ''
+  save-baseline:
+    description: "Path (relative to working-directory) to copy this run's JSON report to, so a later step can upload it as an artifact or cache and later runs can pass it as baseline. Use it on a full-scope run without baseline."
+    required: false
+    default: ''
+  warning-exit-code:
+    description: 'Exit with this code (2-255) when the gate finds warnings but no errors, so a job can tell "passed with warnings" apart. Ignored with fail-on: none. Needs vue-doctor 1.8.0 / nuxt-doctor 1.9.0 or later.'
+    required: false
+    default: ''
   pr-comment:
     description: "Emit a Markdown PR comment. Set to 'true' to enable."
     required: false
@@ -87,6 +103,15 @@ outputs:
   affected-files:
     description: 'The number of distinct files with at least one diagnostic.'
     value: ${{ steps.summary.outputs.affected-files }}
+  new-count:
+    description: 'Findings that are new relative to the baseline or the PR base (with baseline or scope: changed). Empty otherwise.'
+    value: ${{ steps.summary.outputs.new-count }}
+  fixed-count:
+    description: 'Baseline / PR-base findings that no longer occur (with baseline or scope: changed). Empty otherwise.'
+    value: ${{ steps.summary.outputs.fixed-count }}
+  exit-code:
+    description: 'The exit code of the doctor run (0 pass, 1 gate failed, 2 crash or bad input, or the warning-exit-code).'
+    value: ${{ steps.doctor.outputs.gate-code }}
 
 runs:
   using: composite
@@ -166,18 +191,27 @@ runs:
 
     # PR diff base: compare the PR head against its base, not the synthetic
     # merge ref against the merge base (which folds in base-branch drift).
+    # A non-full scope makes the CLI compute merge-base(base, HEAD), so the
+    # script deepens a shallow checkout until that resolves.
     - name: Resolve PR diff base
       id: diff-base
-      if: inputs.diff == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+      if: (inputs.diff == 'true' || (inputs.scope != 'full' && inputs.scope != '')) && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      run: node "$GITHUB_ACTION_PATH/scripts/diff-base.mjs" "$BASE_SHA" "$HEAD_SHA"
+        INPUT_SCOPE: ${{ inputs.scope }}
+      run: |
+        mode=merge-base
+        scope=$(printf '%s' "$INPUT_SCOPE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+        if [ -z "$scope" ] || [ "$scope" = "full" ]; then mode=files; fi
+        node "$GITHUB_ACTION_PATH/scripts/diff-base.mjs" "$BASE_SHA" "$HEAD_SHA" "$mode"
 
-    - name: Run doctor
-      id: doctor
+    # Map inputs to CLI flags and fail fast on bad values or a CLI too old
+    # for scope / baseline / warning-exit-code.
+    - name: Plan doctor arguments
+      id: plan
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -185,13 +219,28 @@ runs:
         INPUT_PRESET: ${{ inputs.preset }}
         INPUT_THRESHOLD: ${{ inputs.threshold }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_SCOPE: ${{ inputs.scope }}
         INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_WARNING_EXIT_CODE: ${{ inputs.warning-exit-code }}
+        EVENT_NAME: ${{ github.event_name }}
+        DIFF_REF: ${{ steps.diff-base.outputs.ref }}
+        RESOLVED_VERSION: ${{ steps.resolve.outputs.resolved }}
+        ARGS_FILE: ${{ runner.temp }}/geoql-doctor-args
+      run: node "$GITHUB_ACTION_PATH/scripts/doctor-args.mjs" "$ARGS_FILE"
+
+    - name: Run doctor
+      id: doctor
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_FRAMEWORK: ${{ inputs.framework }}
         INPUT_PUSH_MODE: ${{ inputs.push-mode }}
         INPUT_PUSH_URL: ${{ inputs.push-url }}
         INPUT_API_KEY: ${{ inputs.api-key }}
         INPUT_PROJECT: ${{ inputs.project }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        DIFF_REF: ${{ steps.diff-base.outputs.ref }}
+        ARGS_FILE: ${{ runner.temp }}/geoql-doctor-args
         RUN_MODE: ${{ steps.resolve.outputs.mode }}
         PACKAGE_MANAGER: ${{ steps.resolve.outputs.package-manager }}
         TOOLCHAIN_DIR: ${{ runner.temp }}/geoql-doctor-toolchain
@@ -210,14 +259,9 @@ runs:
           fi
         }
 
-        args=(--preset "$INPUT_PRESET" --threshold "$INPUT_THRESHOLD" --fail-on "$INPUT_FAIL_ON")
-        if [ "$INPUT_DIFF" = "true" ]; then
-          if [ -n "$DIFF_REF" ]; then
-            args+=(--changed-files-from "$DIFF_REF")
-          else
-            args+=(--diff)
-          fi
-        fi
+        # One arg per line; a read loop, since macOS runners ship bash 3.2 (no mapfile).
+        args=()
+        while IFS= read -r line; do args+=("$line"); done < "$ARGS_FILE"
 
         # v2 push mode: the CLI handles the privacy-stripped findings push
         # internally (rule IDs, severities, locations, message templates — never
@@ -246,6 +290,25 @@ runs:
         set -e
 
         echo "gate-code=$code" >> "$GITHUB_OUTPUT"
+
+    - name: Save baseline report
+      if: always() && inputs.save-baseline != '' && steps.doctor.outcome == 'success'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        SAVE_PATH: ${{ inputs.save-baseline }}
+      run: |
+        if [ ! -s doctor-report.json ]; then
+          echo "::warning::No doctor report to save as a baseline."
+          exit 0
+        fi
+        # A scoped, baseline-compared, or partial report is rejected by --baseline.
+        if ! jq -e '(.scope // null) == null and (.baseline // null) == null and (.incomplete // false) == false' doctor-report.json >/dev/null; then
+          echo "::warning::This report is scoped, baseline-compared, or incomplete, so it cannot be used as a baseline. Save it from a full-scope run without baseline."
+        fi
+        mkdir -p "$(dirname -- "$SAVE_PATH")"
+        cp doctor-report.json "$SAVE_PATH"
+        echo "Saved the doctor report to $SAVE_PATH"
 
     # Outputs (score + counts) and the job step summary, every run.
     - name: Summarize
@@ -359,8 +422,13 @@ runs:
       shell: bash
       env:
         GATE_CODE: ${{ steps.doctor.outputs.gate-code }}
+        WARNING_EXIT_CODE: ${{ inputs.warning-exit-code }}
       run: |
         if [ -n "$GATE_CODE" ] && [ "$GATE_CODE" -ne 0 ]; then
-          echo "::error::doctor gate failed (exit $GATE_CODE): score below threshold or fail-on severity hit."
+          if [ -n "$WARNING_EXIT_CODE" ] && [ "$GATE_CODE" = "$WARNING_EXIT_CODE" ]; then
+            echo "::error::doctor found warnings (exit $GATE_CODE, warning-exit-code)."
+          else
+            echo "::error::doctor gate failed (exit $GATE_CODE): score below threshold or fail-on severity hit."
+          fi
           exit "$GATE_CODE"
         fi
