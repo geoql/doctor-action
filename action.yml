@@ -23,8 +23,12 @@ inputs:
     description: 'Exit non-zero on this severity or worse: error | warn | none.'
     required: false
     default: 'error'
+  version:
+    description: "@geoql/<framework>-doctor version or range to run. The default 'latest' uses the project's own installed doctor (via its package manager) when present, else the range declared in package.json, else the latest published version. Any other value always overrides."
+    required: false
+    default: 'latest'
   diff:
-    description: "Only report findings in files changed vs HEAD. Set to 'true' to enable."
+    description: "Only report findings in changed files. On pull requests the changed set is the PR head vs its base; elsewhere it is changes vs HEAD. Set to 'true' to enable."
     required: false
     default: 'false'
   pr-comment:
@@ -59,14 +63,30 @@ inputs:
     description: 'What to post on a PR when pr-comment is enabled: summary (sticky comment only) | review (inline comments only) | both.'
     required: false
     default: 'both'
+  comment-on-clean:
+    description: "When pr-comment is enabled, whether to create a summary comment when the scan finds no issues. Set to 'false' to only comment when there is something to fix. An existing summary comment is still updated."
+    required: false
+    default: 'true'
 
 outputs:
   score:
     description: 'The integer quality score (0-100) reported by the doctor.'
-    value: ${{ steps.doctor.outputs.score }}
+    value: ${{ steps.summary.outputs.score }}
   findings-count:
     description: 'The total number of diagnostics reported by the doctor.'
-    value: ${{ steps.doctor.outputs.findings-count }}
+    value: ${{ steps.summary.outputs.findings-count }}
+  error-count:
+    description: 'The number of error-severity diagnostics.'
+    value: ${{ steps.summary.outputs.error-count }}
+  warning-count:
+    description: 'The number of warn-severity diagnostics.'
+    value: ${{ steps.summary.outputs.warning-count }}
+  info-count:
+    description: 'The number of info-severity diagnostics.'
+    value: ${{ steps.summary.outputs.info-count }}
+  affected-files:
+    description: 'The number of distinct files with at least one diagnostic.'
+    value: ${{ steps.summary.outputs.affected-files }}
 
 runs:
   using: composite
@@ -86,25 +106,75 @@ runs:
       with:
         node-version: '26'
 
+    # Pick the doctor to run: the project's own installed copy (default), the
+    # range its package.json declares, an explicit `version`, or latest.
+    # Registry picks are resolved to a concrete version for the cache key.
+    - name: Resolve doctor version
+      id: resolve
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_FRAMEWORK: ${{ inputs.framework }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: node "$GITHUB_ACTION_PATH/scripts/resolve-doctor.mjs" "$INPUT_FRAMEWORK" "$INPUT_VERSION"
+
+    # Exact-version key, no restore-keys: a partial/older restore could carry a
+    # mismatched native oxlint binding. Restore + explicit save (below) so a
+    # failing gate, which fails the job by design, still saves the toolchain.
+    - name: Restore doctor toolchain cache
+      id: toolchain-cache
+      if: steps.resolve.outputs.mode == 'registry'
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/geoql-doctor-toolchain
+        key: geoql-doctor-${{ inputs.framework }}-${{ steps.resolve.outputs.resolved }}-node26-${{ runner.os }}-${{ runner.arch }}
+
     - name: Install doctor
+      if: steps.resolve.outputs.mode == 'registry'
       shell: bash
       env:
         INPUT_FRAMEWORK: ${{ inputs.framework }}
+        RESOLVED: ${{ steps.resolve.outputs.resolved }}
+        TOOLCHAIN_DIR: ${{ runner.temp }}/geoql-doctor-toolchain
       run: |
-        # Resolve the exact version from the registry HTTP API (no client-side
-        # dist-tag cache) then install with `npm i -g`, NOT `pnpm add -g`. pnpm's
-        # global-add path both caches the `latest` dist-tag (resolving stale
-        # versions long after publish) and crashes on a consumer repo's
-        # minimumReleaseAge policy (ERR_PNPM_RESOLUTION_POLICY_VIOLATIONS_UNHANDLED).
-        # npm has neither problem and its global bin is already on PATH via setup-node.
-        pkg="@geoql/${INPUT_FRAMEWORK}-doctor"
-        version=$(curl -fsSL "https://registry.npmjs.org/${pkg}/latest" | jq -r '.version')
-        if [ -z "$version" ] || [ "$version" = "null" ]; then
-          echo "::error::Could not resolve latest version of ${pkg} from the npm registry."
+        # npm into a dedicated prefix, NOT `pnpm add -g`: pnpm's global add
+        # caches dist-tags and trips a consumer repo's minimumReleaseAge policy.
+        # Installing from inside the prefix keeps the consumer's .npmrc out of it.
+        bin="$TOOLCHAIN_DIR/node_modules/.bin/${INPUT_FRAMEWORK}-doctor"
+        if "$bin" --version >/dev/null 2>&1; then
+          echo "Using cached @geoql/${INPUT_FRAMEWORK}-doctor@${RESOLVED}"
+          exit 0
+        fi
+        rm -rf "$TOOLCHAIN_DIR"
+        mkdir -p "$TOOLCHAIN_DIR"
+        cd "$TOOLCHAIN_DIR" || exit 1
+        npm install --prefix "$TOOLCHAIN_DIR" --no-save --no-audit --no-fund "@geoql/${INPUT_FRAMEWORK}-doctor@${RESOLVED}"
+        # npm treats optional-dependency failures as non-fatal, so prove the bin
+        # runs before it can be cached under the immutable version key.
+        if ! "$bin" --version >/dev/null 2>&1; then
+          rm -rf "$TOOLCHAIN_DIR"
+          echo "::error::@geoql/${INPUT_FRAMEWORK}-doctor@${RESOLVED} installed but does not run."
           exit 1
         fi
-        echo "Resolved ${pkg}@${version}"
-        npm install -g "${pkg}@${version}"
+
+    - name: Save doctor toolchain cache
+      if: steps.resolve.outputs.mode == 'registry' && steps.toolchain-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/geoql-doctor-toolchain
+        key: geoql-doctor-${{ inputs.framework }}-${{ steps.resolve.outputs.resolved }}-node26-${{ runner.os }}-${{ runner.arch }}
+
+    # PR diff base: compare the PR head against its base, not the synthetic
+    # merge ref against the merge base (which folds in base-branch drift).
+    - name: Resolve PR diff base
+      id: diff-base
+      if: inputs.diff == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: node "$GITHUB_ACTION_PATH/scripts/diff-base.mjs" "$BASE_SHA" "$HEAD_SHA"
 
     - name: Run doctor
       id: doctor
@@ -121,11 +191,32 @@ runs:
         INPUT_API_KEY: ${{ inputs.api-key }}
         INPUT_PROJECT: ${{ inputs.project }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        DIFF_REF: ${{ steps.diff-base.outputs.ref }}
+        RUN_MODE: ${{ steps.resolve.outputs.mode }}
+        PACKAGE_MANAGER: ${{ steps.resolve.outputs.package-manager }}
+        TOOLCHAIN_DIR: ${{ runner.temp }}/geoql-doctor-toolchain
       run: |
         bin="${INPUT_FRAMEWORK}-doctor"
+        doctor() {
+          if [ "$RUN_MODE" = "project" ]; then
+            case "$PACKAGE_MANAGER" in
+              pnpm) pnpm exec "$bin" "$@" ;;
+              yarn) yarn run "$bin" "$@" ;;
+              bun) bun run "$bin" "$@" ;;
+              *) npm exec --no -- "$bin" "$@" ;;
+            esac
+          else
+            "$TOOLCHAIN_DIR/node_modules/.bin/$bin" "$@"
+          fi
+        }
+
         args=(--preset "$INPUT_PRESET" --threshold "$INPUT_THRESHOLD" --fail-on "$INPUT_FAIL_ON")
         if [ "$INPUT_DIFF" = "true" ]; then
-          args+=(--diff)
+          if [ -n "$DIFF_REF" ]; then
+            args+=(--changed-files-from "$DIFF_REF")
+          else
+            args+=(--diff)
+          fi
         fi
 
         # v2 push mode: the CLI handles the privacy-stripped findings push
@@ -147,21 +238,22 @@ runs:
         # emit SARIF from the same args for Code Scanning. set +e lets us capture
         # the gate exit code instead of letting `set -e` abort the step.
         set +e
-        "$bin" "${args[@]}" "${push_args[@]}" --format json --output doctor-report.json
+        doctor "${args[@]}" "${push_args[@]}" --format json --output doctor-report.json
         code=$?
         # SARIF re-run must NOT carry the push args or every CI run double-posts
         # the same score/findings to the dashboard.
-        "$bin" "${args[@]}" --format sarif --output doctor.sarif
+        doctor "${args[@]}" --format sarif --output doctor.sarif
         set -e
 
-        score=$(jq -r '.score.value' doctor-report.json)
-        findings=$(jq -r '.diagnostics | length' doctor-report.json)
+        echo "gate-code=$code" >> "$GITHUB_OUTPUT"
 
-        {
-          echo "score=$score"
-          echo "findings-count=$findings"
-          echo "gate-code=$code"
-        } >> "$GITHUB_OUTPUT"
+    # Outputs (score + counts) and the job step summary, every run.
+    - name: Summarize
+      id: summary
+      if: always() && steps.doctor.outcome != 'skipped'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: node "$GITHUB_ACTION_PATH/scripts/report-summary.mjs" doctor-report.json
 
     - name: Push score to the-doctor.report
       if: inputs.api-key != '' && inputs.push-mode != 'full'
@@ -224,6 +316,7 @@ runs:
       env:
         REPORT_PATH: ${{ inputs.working-directory }}/doctor-report.json
         COMMENT_MODE: ${{ inputs.comment-mode }}
+        COMMENT_ON_CLEAN: ${{ inputs.comment-on-clean }}
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
         ACTION_PATH: ${{ github.action_path }}
       with:
@@ -254,6 +347,7 @@ runs:
             report,
             mode: process.env.COMMENT_MODE || 'both',
             workingDirectory: process.env.WORKING_DIRECTORY || '.',
+            commentOnClean: process.env.COMMENT_ON_CLEAN !== 'false',
           });
 
     # Gate LAST so the score push + PR comment always run first, even on a
