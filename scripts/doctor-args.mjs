@@ -15,6 +15,9 @@ export const SCOPES = ['full', 'files', 'changed', 'lines', 'contextual'];
 /** First CLI release with --scope / --base / --baseline / --warning-exit-code. */
 export const MIN_SCOPE_VERSION = { vue: '1.8.0', nuxt: '1.9.0' };
 
+/** First CLI release with --sarif-output (one audit writes JSON + SARIF). */
+export const MIN_SARIF_OUTPUT_VERSION = { vue: '1.9.0', nuxt: '1.10.0' };
+
 /** @param {string} v */
 function parseVersion(v) {
   const m = /(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?/.exec(String(v ?? ''));
@@ -23,14 +26,16 @@ function parseVersion(v) {
 }
 
 /**
- * Whether `version` is at least the framework's scope-capable release.
- * Returns null when the version cannot be read (workspace:, file:, empty).
+ * Whether `version` is at least the framework's floor in `floors` (default:
+ * the scope-capable release). Returns null when the version cannot be read
+ * (workspace:, file:, empty).
  * @param {string} framework
  * @param {string} version
+ * @param {Record<'vue'|'nuxt', string>} [floors]
  * @returns {boolean | null}
  */
-export function meetsMinimumVersion(framework, version) {
-  const floor = parseVersion(MIN_SCOPE_VERSION[/** @type {'vue'|'nuxt'} */ (framework)] ?? '');
+export function meetsMinimumVersion(framework, version, floors = MIN_SCOPE_VERSION) {
+  const floor = parseVersion(floors[/** @type {'vue'|'nuxt'} */ (framework)] ?? '');
   const actual = parseVersion(version);
   if (!floor || !actual) return null;
   for (let i = 0; i < 3; i += 1) {
@@ -119,7 +124,11 @@ export function planDoctorArgs(input) {
     }
   }
 
-  return { args, scope, usesNewFlags, errors, warnings, notices };
+  // One audit writes JSON + SARIF when the CLI has --sarif-output; an older
+  // or unreadable version keeps the two-run path.
+  const singleRun = Boolean(input.framework) && meetsMinimumVersion(String(input.framework), String(input.version ?? ''), MIN_SARIF_OUTPUT_VERSION) === true;
+
+  return { args, scope, usesNewFlags, singleRun, errors, warnings, notices };
 }
 
 function main() {
@@ -145,7 +154,7 @@ function main() {
 
   if (out) fs.writeFileSync(out, `${plan.args.join('\n')}\n`);
   else process.stdout.write(`${plan.args.join('\n')}\n`);
-  const outputs = `scope=${plan.scope}\n`;
+  const outputs = `scope=${plan.scope}\nsingle-run=${plan.singleRun}\n`;
   if (env.GITHUB_OUTPUT) fs.appendFileSync(env.GITHUB_OUTPUT, outputs);
 }
 

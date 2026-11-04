@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { planDoctorArgs, meetsMinimumVersion, MIN_SCOPE_VERSION } from './doctor-args.mjs';
+import { planDoctorArgs, meetsMinimumVersion, MIN_SCOPE_VERSION, MIN_SARIF_OUTPUT_VERSION } from './doctor-args.mjs';
 
 const BASE = { preset: 'recommended', threshold: '0', failOn: 'error' };
 const REF = 'a'.repeat(40);
@@ -113,4 +113,45 @@ test('the version guard fails fast when new flags meet an old CLI', () => {
   const unknown = planDoctorArgs({ ...BASE, warningExitCode: '78', framework: 'vue', version: 'workspace:*' });
   assert.deepEqual(unknown.errors, []);
   assert.match(unknown.warnings.join('\n'), /Could not verify/);
+});
+
+test('a CLI with --sarif-output gets a single run', () => {
+  for (const [framework, version] of [['vue', '1.9.0'], ['nuxt', '1.10.0'], ['vue', '2.0.0'], ['nuxt', '1.10.3']]) {
+    const plan = planDoctorArgs({ ...BASE, framework, version });
+    assert.equal(plan.singleRun, true, `${framework} ${version}`);
+    assert.deepEqual(plan.args, ['--preset', 'recommended', '--threshold', '0', '--fail-on', 'error']);
+  }
+});
+
+test('an older, prerelease, or unreadable CLI keeps the two-run path', () => {
+  for (const [framework, version] of [['vue', '1.8.0'], ['nuxt', '1.9.0'], ['vue', '1.9.0-rc.1'], ['vue', 'workspace:*'], ['vue', ''], [undefined, '9.9.9']]) {
+    const plan = planDoctorArgs({ ...BASE, framework, version });
+    assert.equal(plan.singleRun, false, `${framework} ${version}`);
+  }
+});
+
+test('meetsMinimumVersion accepts a custom floor table', () => {
+  assert.equal(meetsMinimumVersion('vue', '1.9.0', MIN_SARIF_OUTPUT_VERSION), true);
+  assert.equal(meetsMinimumVersion('vue', '1.8.9', MIN_SARIF_OUTPUT_VERSION), false);
+  assert.equal(meetsMinimumVersion('nuxt', '1.10.0', MIN_SARIF_OUTPUT_VERSION), true);
+  assert.equal(meetsMinimumVersion('nuxt', '1.9.9', MIN_SARIF_OUTPUT_VERSION), false);
+});
+
+test('main writes the single-run step output', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdtempSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'doctor-args-'));
+  const run = (version) => {
+    const outFile = join(dir, `out-${version}`);
+    const r = spawnSync(process.execPath, [new URL('./doctor-args.mjs', import.meta.url).pathname, join(dir, 'args')], {
+      env: { ...process.env, INPUT_FRAMEWORK: 'vue', RESOLVED_VERSION: version, GITHUB_OUTPUT: outFile },
+      encoding: 'utf8',
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    return readFileSync(outFile, 'utf8');
+  };
+  assert.match(run('1.9.0'), /^single-run=true$/m);
+  assert.match(run('1.8.0'), /^single-run=false$/m);
 });

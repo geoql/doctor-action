@@ -244,6 +244,7 @@ runs:
         RUN_MODE: ${{ steps.resolve.outputs.mode }}
         PACKAGE_MANAGER: ${{ steps.resolve.outputs.package-manager }}
         TOOLCHAIN_DIR: ${{ runner.temp }}/geoql-doctor-toolchain
+        SINGLE_RUN: ${{ steps.plan.outputs.single-run }}
       run: |
         bin="${INPUT_FRAMEWORK}-doctor"
         doctor() {
@@ -278,15 +279,21 @@ runs:
           fi
         fi
 
-        # Run the audit once to JSON (drives outputs + the gate exit code), then
-        # emit SARIF from the same args for Code Scanning. set +e lets us capture
-        # the gate exit code instead of letting `set -e` abort the step.
+        # JSON drives the outputs + the gate exit code; SARIF feeds Code Scanning.
+        # A CLI with --sarif-output writes both from one audit. Older CLIs run a
+        # second, SARIF-only audit. set +e lets us capture the gate exit code
+        # instead of letting `set -e` abort the step.
         set +e
-        doctor "${args[@]}" "${push_args[@]}" --format json --output doctor-report.json
-        code=$?
-        # SARIF re-run must NOT carry the push args or every CI run double-posts
-        # the same score/findings to the dashboard.
-        doctor "${args[@]}" --format sarif --output doctor.sarif
+        if [ "$SINGLE_RUN" = "true" ]; then
+          doctor "${args[@]}" "${push_args[@]}" --format json --output doctor-report.json --sarif-output doctor.sarif
+          code=$?
+        else
+          doctor "${args[@]}" "${push_args[@]}" --format json --output doctor-report.json
+          code=$?
+          # SARIF re-run must NOT carry the push args or every CI run double-posts
+          # the same score/findings to the dashboard.
+          doctor "${args[@]}" --format sarif --output doctor.sarif
+        fi
         set -e
 
         echo "gate-code=$code" >> "$GITHUB_OUTPUT"
