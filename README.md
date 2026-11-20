@@ -208,7 +208,7 @@ The CLI rejects a baseline (exit 2) that came from a run with different finding 
 | `comment-on-clean` | `true` | Create a summary comment on a clean scan. `false` skips it; an existing comment is still updated. |
 | `token` | `${{ github.token }}` | Token used to post PR comments. Needs `pull-requests: write`. |
 | `working-directory` | `.` | Directory to run the audit in (the project root). |
-| `api-key` | `''` | the-doctor.report API key (`doc_…`). When set, results push to your dashboard. Pass via secrets, never inline. |
+| `api-key` | `''` | the-doctor.report API key (`doc_…`). When set, results push to your dashboard. Pass via secrets, never inline. The doctor step also exports it as `DOCTOR_API_KEY`. |
 | `project` | `${{ github.repository }}` | Project slug for the dashboard. Defaults to the GitHub `owner/repo`. |
 | `push-mode` | `full` | How to push: `full` (CLI streams privacy-stripped findings in one call) or `score` (action posts only the score via curl). |
 | `push-url` | `https://app.the-doctor.report/api/v1/findings` | Findings endpoint, used when `push-mode` is `full`. Override for self-hosted. |

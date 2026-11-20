@@ -238,6 +238,9 @@ runs:
         INPUT_PUSH_MODE: ${{ inputs.push-mode }}
         INPUT_PUSH_URL: ${{ inputs.push-url }}
         INPUT_API_KEY: ${{ inputs.api-key }}
+        # CLIs >= the DOCTOR_API_KEY release read the key from here; --api-key
+        # below stays for older CLIs (the flag wins when both are set).
+        DOCTOR_API_KEY: ${{ inputs.api-key }}
         INPUT_PROJECT: ${{ inputs.project }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         ARGS_FILE: ${{ runner.temp }}/geoql-doctor-args
