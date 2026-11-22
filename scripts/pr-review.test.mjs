@@ -200,6 +200,61 @@ test('buildSummary handles the clean (no findings) case', () => {
   assert.match(md, /No actionable findings|✓|clean/i);
 });
 
+// The score and its counts leave out test/story-file findings (surface
+// "test"): the gate ignores them. The report still lists them, so the
+// summary must not show one as a counted "warn" under a "0 warns" header.
+test('buildSummary keeps test-file findings out of the counted table', () => {
+  const md = buildSummary({
+    toolName: '@geoql/nuxt-doctor',
+    score: 100,
+    bySeverity: { error: 0, warn: 0, info: 0 },
+    diagnostics: [
+      { file: 'tests/unit/a.test.ts', line: 10, column: 17, ruleId: 'vue-doctor/security/no-secrets-in-source', severity: 'warn', surface: 'test', message: 'Hardcoded secret in source.' },
+    ],
+    serverUrl: 'https://github.com',
+    repository: 'geoql/app',
+    runId: '1',
+  });
+
+  assert.match(md, /0 warns/);
+  assert.match(md, /No actionable findings/);
+  assert.doesNotMatch(md, /Top findings/);
+  assert.match(md, /1 finding in test files \(not gated\)/);
+  assert.match(md, /tests\/unit\/a\.test\.ts:10/);
+  assert.doesNotMatch(md, /\| 🟡 warn \|/);
+});
+
+test('buildSummary lists gated findings first and test-file findings separately', () => {
+  const md = buildSummary({
+    toolName: '@geoql/vue-doctor',
+    score: 97,
+    bySeverity: { error: 0, warn: 1, info: 0 },
+    diagnostics: [
+      { file: 'tests/b.test.ts', line: 2, ruleId: 'r/test', severity: 'warn', surface: 'test', message: 'in a test' },
+      { file: 'src/B.vue', line: 5, ruleId: 'r/src', severity: 'warn', message: 'in source' },
+    ],
+    serverUrl: 'https://github.com',
+    repository: 'geoql/app',
+    runId: '1',
+  });
+
+  assert.match(md, /Top findings \(1 of 1\)/);
+  const table = md.slice(md.indexOf('Top findings'), md.indexOf('not gated'));
+  assert.match(table, /r\/src/);
+  assert.doesNotMatch(table, /r\/test/);
+  assert.match(md, /1 finding in test files \(not gated\)/);
+});
+
+test('mapFindingsToComments labels a test-file finding as not gated', () => {
+  const positions = new Map([['tests/b.test.ts', new Map([[2, 4]])]]);
+  const { comments } = mapFindingsToComments(
+    [{ file: 'tests/b.test.ts', line: 2, ruleId: 'r/test', severity: 'warn', surface: 'test', message: 'in a test' }],
+    positions,
+  );
+  assert.equal(comments.length, 1);
+  assert.match(comments[0].body, /test file, not gated/);
+});
+
 test('decideSummaryAction: an existing sticky comment is always updated', () => {
   assert.equal(decideSummaryAction({ stickyId: 7, isClean: true, commentOnClean: false }), 'update');
   assert.equal(decideSummaryAction({ stickyId: 7, isClean: false, commentOnClean: true }), 'update');
