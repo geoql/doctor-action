@@ -159,14 +159,27 @@ export function findingMarker(f) {
 const SEVERITY_ICON = { error: '🔴', warn: '🟡', info: '🔵' };
 
 /**
+ * A finding in a test or story file. The doctor's score, its severity counts
+ * and the `--fail-on` gate all leave these out (doctor-core marks them
+ * `surface: "test"`), so they must not be shown as counted findings.
+ * @param {{ surface?: string }} d
+ */
+export function isUngated(d) {
+  return d?.surface === 'test';
+}
+
+/**
  * @param {{ ruleId: string, severity: string, message: string, recommendation?: string }} d
  * @param {string} file
  * @param {number} line
  */
 function inlineCommentBody(d, file, line) {
   const icon = SEVERITY_ICON[d.severity] ?? '⚪️';
+  const label = isUngated(d)
+    ? `${icon} **${d.severity}** · \`${d.ruleId}\` · test file, not gated`
+    : `${icon} **${d.severity}** · \`${d.ruleId}\``;
   const parts = [
-    `${icon} **${d.severity}** · \`${d.ruleId}\``,
+    label,
     '',
     d.message,
   ];
@@ -292,7 +305,9 @@ export function buildSummary(input) {
   const errors = Number(bySeverity?.error ?? 0);
   const warns = Number(bySeverity?.warn ?? 0);
   const infos = Number(bySeverity?.info ?? 0);
-  const total = diagnostics.length;
+  const gated = diagnostics.filter((d) => !isUngated(d));
+  const ungated = diagnostics.filter(isUngated);
+  const total = gated.length;
 
   const runLink =
     repository && runId
@@ -312,7 +327,7 @@ export function buildSummary(input) {
   if (total === 0) {
     lines.push('', '✓ No actionable findings — the code is clean.');
   } else {
-    const sorted = [...diagnostics].sort((a, b) => {
+    const sorted = [...gated].sort((a, b) => {
       const order = { error: 0, warn: 1, info: 2 };
       const sa = order[a.severity] ?? 3;
       const sb = order[b.severity] ?? 3;
@@ -328,6 +343,23 @@ export function buildSummary(input) {
       const rule = `[\`${d.ruleId}\`](${docsUrl(d.ruleId)})`;
       const msg = String(d.message ?? '').replaceAll('|', '\\|').replaceAll('\n', ' ');
       lines.push(`| ${icon} ${d.severity} | ${rule} | ${loc} | ${msg} |`);
+    }
+    lines.push('', '</details>');
+  }
+
+  if (ungated.length > 0) {
+    const n = ungated.length;
+    lines.push(
+      '',
+      '<details>',
+      `<summary>${n} finding${n === 1 ? '' : 's'} in test files (not gated)</summary>`,
+      '',
+      'Test and story files do not count toward the score or the gate.',
+      '',
+    );
+    for (const d of ungated.slice(0, MAX_SUMMARY_FINDINGS)) {
+      const msg = String(d.message ?? '').replaceAll('\n', ' ');
+      lines.push(`- \`${normalizePath(d.file)}:${d.line}\` [\`${d.ruleId}\`](${docsUrl(d.ruleId)}): ${msg}`);
     }
     lines.push('', '</details>');
   }
@@ -481,7 +513,7 @@ export async function run({ github, context, core, report, mode, workingDirector
       stickyId = selectStickyComment(existingIssueComments, LEGACY_STICKY_MARKER);
     }
 
-    const action = decideSummaryAction({ stickyId, isClean: diagnostics.length === 0, commentOnClean });
+    const action = decideSummaryAction({ stickyId, isClean: !diagnostics.some((d) => !isUngated(d)), commentOnClean });
 
     if (action === 'update' && stickyId !== null) {
       await github.rest.issues.updateComment({ owner, repo, comment_id: stickyId, body });
